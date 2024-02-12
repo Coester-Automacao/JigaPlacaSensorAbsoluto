@@ -1,9 +1,16 @@
 /*
    Firmware Jiga de Teste p/ Placa Sensor de Posição Abs.
 
-   Versão 2.0
+   Versão 2.0.1
    Desenvolvido em 02/2022
 
+   Revisado em: 02/2024
+
+   Histórico de versões:
+   V2.0.1:  Incluídos comentários para melhor informar status dos testes
+            Lógica do teste de 50% de corrente alterada
+            Agora a placa sob teste também reseta quando passa do teste de 100% para o 50%
+            Algumas placas não estavam respondendo adequadamente e indicando erro nessa etapa
 */
 
 #include <BspJigaSensorAbs.h>
@@ -70,6 +77,7 @@ uint16_t valCur;
 uint8_t buf [5];
 uint8_t cont_retent, cont_med_retent, cont_pos_retent;
 uint8_t sum;
+bool isTest100PercentCurrent = true;
 
 
 //Valor de status e posição de cada sensor
@@ -93,6 +101,7 @@ typedef union
 
 
 //Valor da posição
+#pragma pack(1)
 typedef union
 {
   struct st_val_pos
@@ -103,6 +112,7 @@ typedef union
   } st_vpos;
   uint8_t bytesRec[sizeof(st_vpos)];
 } u_val_pos;
+#pragma pack()
 
 
 enum en_byte_write {
@@ -215,6 +225,7 @@ BspJigSensAbs bsp = BspJigSensAbs();
 
 
 uint8_t BUF_SET_REFER[] =  {0x81, 0xAA, 0xBB, 0xCC, 0xDD};
+uint8_t returnValue = 0;
 
 
 // Testa a comunicação I2C.
@@ -286,12 +297,15 @@ jiga_pos_abs_init()
   timerAttachInterrupt(timer, &blink_LED, true);
   timerAlarmWrite(timer, 300000, true);
   timerAlarmEnable(timer);
+  Serial.println("Timers OK");
 
   stt_test_curr = TEST_CURR_DISAB_5V;
   stt_medicao_curr = STT_MEDICAO_INIT;
+  Serial.println("State Medições OK");  
   
   stt_read_pos = STT_READ_POS_SET_REFER;
   cont_pos_retent =0;
+  Serial.println("Contatos OK"); 
 }
 
 
@@ -303,6 +317,13 @@ jiga_pos_abs_i2c_test_sensors()       // Lê cada um dos sensores
   if ( bsp.bsp_i2c_write( IFR_DIAG ) == I2C_SUCESS )
   {
     bsp.bsp_i2c_read(u_sensors.bytesSensores, sizeof(u_sensors.bytesSensores));
+
+    Serial.println("Valores lidos I2C ao enviar solicitação IFR_DIAG");
+    Serial.println(u_sensors.st_sens.S1_val);
+    Serial.println(u_sensors.st_sens.S2_val);
+    Serial.println(u_sensors.st_sens.S3_val);
+    Serial.println(u_sensors.st_sens.S4_val);
+    Serial.println(u_sensors.st_sens.S5_val);
 
     if( ! ((u_sensors.st_sens.S1_stat == SENSOR_OK) && (u_sensors.st_sens.S1_val >= (SENSOR_1_VAL_NOM - TOLER_SENSORES)) && (u_sensors.st_sens.S1_val <= (SENSOR_1_VAL_NOM + TOLER_SENSORES))))
     {
@@ -365,11 +386,11 @@ jiga_pos_abs_i2c_read_position()      // Lê a posição
       if ( jiga_pos_abs_i2c_set_refer() )
       {
         stt_read_pos = STT_READ_POS_SET_REINIT_TIME;
-        Serial.println(" STT_READ_POS_SET_REFER OK");
+        Serial.println("STT_READ_POS_SET_REFER OK");
       }
       else
       {
-        Serial.println(" STT_READ_POS_SET_REFER FAIL");
+        Serial.println("STT_READ_POS_SET_REFER FAIL");
         en_test_fail = FAIL_I2C_COMUN;
         stt_read_pos = STT_READ_POS_FALHA;
       }
@@ -377,6 +398,7 @@ jiga_pos_abs_i2c_read_position()      // Lê a posição
 
 
     case STT_READ_POS_SET_REINIT_TIME:
+      Serial.println("Esperando....");
       jiga_was_resset = false;
       timer_resset.in( 2000, jiga_pos_abs_shutdown_time );
       timer_enab = true;
@@ -394,14 +416,17 @@ jiga_pos_abs_i2c_read_position()      // Lê a posição
 
 
     case STT_READ_POS_TEST_REINIT:
+      Serial.println("Esperou 3 segundos!!!!");
       if( bsp.bsp_i2c_write( IFR_POS ) == I2C_SUCESS )
       {
+        Serial.println("Escrita I2C Posição Sucesso");
         bsp.bsp_i2c_read( u_pos.bytesRec, sizeof(u_pos.bytesRec) );
         stt_read_pos = STT_READ_POS_CHECK_SUM;
         cont_retent=0;
       }
       else
       {
+        Serial.println("Escrita I2C Posição Falha");
         cont_retent++;
         delay( 10 );
         if ( cont_retent > 3 )
@@ -414,6 +439,7 @@ jiga_pos_abs_i2c_read_position()      // Lê a posição
 
 
     case STT_READ_POS_CHECK_SUM:
+      Serial.println("Checksum");
       sum = 0;
       for (int i = 0; i < 5; i++)
       {
@@ -422,10 +448,12 @@ jiga_pos_abs_i2c_read_position()      // Lê a posição
 
       if (u_pos.st_vpos.cs == sum)
       {
+        Serial.println("Checksum OK");
         stt_read_pos = STT_READ_POS_VERIF_POSICAO;
       }
       else
       {
+        Serial.println("Checksum FAIL");
         en_test_fail = FAIL_I2C_CHECKSUM;
         stt_read_pos = STT_READ_POS_FALHA;
       }
@@ -442,7 +470,7 @@ jiga_pos_abs_i2c_read_position()      // Lê a posição
         cont_pos_retent++;
         if( cont_pos_retent < 5 )
         {
-          Serial.println(" RETENT READ POS ");
+          Serial.println("RETENT READ POS ");
           stt_read_pos = STT_READ_POS_SET_REFER;
           delay(500);
         }
@@ -476,10 +504,12 @@ bool jiga_pos_abs_shutdown_time( void *)
 bool
 jiga_pos_abs_test_corrente()
 {
+//	Serial.println("INICIO TESTE DE CORRENTE");
   switch ( stt_test_curr )
   {
     // Desabilita a alimentação da placa sob teste
     case TEST_CURR_DISAB_5V:
+      Serial.println("Desabilitando 5V");
       bsp.bsp_disab_5V_ext();
       jiga_was_resset = false;
       timer_resset.in( 3000, jiga_pos_abs_shutdown_time );
@@ -491,6 +521,7 @@ jiga_pos_abs_test_corrente()
     case TEST_CURR_WAIT_RESSET:
       if ( jiga_was_resset == true )
       {
+        Serial.println("Habilitando 5V");
         bsp.bsp_enab_5V_ext();
         jiga_was_resset = false;
         timer_resset.in( DELAY_INIT, jiga_pos_abs_shutdown_time );
@@ -503,8 +534,9 @@ jiga_pos_abs_test_corrente()
     case TEST_CURR_WAIT_INIT:
       if ( jiga_was_resset == true )
       {
+	      Serial.println("Aguardou 1s");
         jiga_was_resset = false;
-        stt_test_curr = TEST_CURR_MED_100;
+        stt_test_curr = isTest100PercentCurrent? TEST_CURR_MED_100 : TEST_CURR_MED_50;
       }
       break;
 
@@ -513,7 +545,8 @@ jiga_pos_abs_test_corrente()
     case TEST_CURR_MED_100:
       if ( jiga_pos_abs_med_curr( SET_CORREN_100 ))
       {
-        stt_test_curr = TEST_CURR_MED_50;
+        stt_test_curr = TEST_CURR_DISAB_5V;
+        isTest100PercentCurrent = false;
       }
       else
       {
@@ -581,25 +614,35 @@ jiga_pos_abs_med_curr( uint16_t percCorrente )
 
 
     case STT_MEDICAO_ENVIA_CMD_CURR:
-      if( bsp.bsp_i2c_write( IFR_CMD_CURR ) == I2C_SUCESS )
-      {
+      returnValue = bsp.bsp_i2c_write( IFR_CMD_CURR );
+      if( returnValue == I2C_SUCESS )
+      {    
+        Serial.println("Comando IFR MCD CURR");
         stt_medicao_curr = STT_MEDICAO_ENVIA_BUF;
       }
       else
       {
+        Serial.println("ERRO - Comando IFR MCD CURR");
+        Serial.print("Valor retornado:");
+        Serial.print(returnValue);
         stt_medicao_curr = STT_MEDICAO_RETENT_CMD;
       }
       break;
 
 
     case STT_MEDICAO_ENVIA_BUF:
-      if ( bsp.bsp_i2c_write( buf, 5 ) == I2C_SUCESS )
+      returnValue = bsp.bsp_i2c_write( buf, 5 );
+      if (  returnValue == I2C_SUCESS )
       {
+        Serial.println("Buffer enviado");
         stt_medicao_curr = STT_MEDICAO_WAIT_ESTAB;
         timer_resset.in( 50, jiga_pos_abs_shutdown_time );
       }
       else
       {
+        Serial.println("ERRO - Buffer nao enviado");
+        Serial.print("Valor retornado:");
+        Serial.print(returnValue);
         stt_medicao_curr = STT_MEDICAO_RETENT_CMD;
       }
       break;
@@ -796,7 +839,7 @@ jiga_pos_abs_run_test()
     case STT_TEST_CORRENTE:
       if ( jiga_pos_abs_test_corrente() )
       {
-        Serial.println(" STT_TEST_CORRENTE OK");
+        Serial.println("STT_TEST_CORRENTE OK");
         stt_geral = STT_FINISH;
         jiga_pos_abs_sinal_test_etapa_ok();
       }
@@ -809,12 +852,13 @@ jiga_pos_abs_run_test()
       }
       break;
   }
-
+	return true;
 }
 
 void
 jiga_pos_abs_sinal_test_etapa_fail( uint8_t num_teste )   //Sinalização do resultado de falha da etapa do teste
 {
+  bsp.bsp_i2c_write( IFR_CMD_CURR );
   timerAlarmDisable(timer);
   uint8_t fatorFalha;
 
@@ -902,7 +946,6 @@ void setup()
 
 void loop()
 {
-  Serial.println("INICIO");
   if ( timer_enab == true )
   {
     timer_resset.tick();
